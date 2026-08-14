@@ -66,6 +66,7 @@ def compute_score(solution_str, ground_truth, method="strict", format_score=0.0,
     if answer is None:
         return {
             "score": 0.0,
+            "acc": 0.0,
             "format_valid": False,
             "correct": False,
         }
@@ -73,6 +74,7 @@ def compute_score(solution_str, ground_truth, method="strict", format_score=0.0,
     is_correct = answer == ground_truth
     return {
         "score": score if is_correct else format_score,
+        "acc": 1.0 if is_correct else 0.0,
         "format_valid": True,
         "correct": is_correct,
     }
