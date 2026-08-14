@@ -437,10 +437,20 @@ class RayPPOTrainer:
         except Exception as e:
             print(f"Warning: Could not set total_training_steps in config. Structure missing? Error: {e}")
 
-    def _dump_generations(self, inputs, outputs, gts, scores, reward_extra_infos_dict, dump_path):
+    def _dump_generations(
+        self,
+        inputs,
+        outputs,
+        gts,
+        scores,
+        reward_extra_infos_dict,
+        dump_path,
+        filename_suffix="",
+        append=False,
+    ):
         """Dump rollout/validation samples as JSONL."""
         os.makedirs(dump_path, exist_ok=True)
-        filename = os.path.join(dump_path, f"{self.global_steps}.jsonl")
+        filename = os.path.join(dump_path, f"{self.global_steps}{filename_suffix}.jsonl")
 
         n = len(inputs)
         base_data = {
@@ -460,7 +470,8 @@ class RayPPOTrainer:
             entry = {k: self._json_safe(v[i]) for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
-        with open(filename, "w") as f:
+        mode = "a" if append else "w"
+        with open(filename, mode) as f:
             f.write("\n".join(lines) + "\n")
 
         print(f"Dumped generations to {filename}")
@@ -478,7 +489,13 @@ class RayPPOTrainer:
         return value
 
     def _log_rollout_data(
-        self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
+        self,
+        batch: DataProto,
+        reward_extra_infos_dict: dict,
+        timing_raw: dict,
+        rollout_data_dir: str,
+        filename_suffix: str = "",
+        append: bool = False,
     ):
         """Log rollout data to disk.
         Args:
@@ -501,7 +518,7 @@ class RayPPOTrainer:
                     value = batch.non_tensor_batch[key]
                     if len(value) == len(batch):
                         reward_extra_infos_to_dump[key] = value.tolist() if hasattr(value, "tolist") else value
-            response_mask = batch.batch["response_mask"].bool()
+            response_mask = batch.batch.get("response_mask", compute_response_mask(batch)).bool()
             response_lengths = response_mask.sum(dim=-1)
             response_lengths_list = response_lengths.cpu().tolist()
             max_response_length = batch.batch["responses"].shape[-1]
@@ -573,6 +590,8 @@ class RayPPOTrainer:
                 scores=scores,
                 reward_extra_infos_dict=reward_extra_infos_to_dump,
                 dump_path=rollout_data_dir,
+                filename_suffix=filename_suffix,
+                append=append,
             )
 
     def _maybe_log_val_generations(self, inputs, outputs, scores):
