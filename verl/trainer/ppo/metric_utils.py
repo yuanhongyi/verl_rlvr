@@ -224,6 +224,104 @@ def compute_data_metrics(batch: DataProto, use_critic: bool = True) -> dict[str,
     return metrics
 
 
+def compute_invalid_rollout_metrics(
+    batch: DataProto,
+    reward_extra_info: dict[str, Any] | None = None,
+    short_answer_threshold: int = 8,
+    low_diversity_threshold: float = 0.5,
+) -> dict[str, Any]:
+    """Compute rollout waste diagnostics for a completed training batch.
+
+    The metrics are intentionally lightweight and batch-local:
+    - group reasons are assigned per prompt uid with a simple precedence order
+    - token fractions are approximated from response lengths inside the batch
+    """
+
+    response_mask = batch.batch["response_mask"].bool()
+    response_lengths = response_mask.sum(dim=-1)
+    max_response_length = batch.batch["responses"].shape[-1]
+    total_response_tokens = max(int(response_lengths.sum().item()), 1)
+
+    sequence_reward = batch.batch["token_level_scores"].sum(dim=-1).detach().cpu().numpy()
+    uids = np.asarray(batch.non_tensor_batch.get("uid", np.arange(len(batch), dtype=object)), dtype=object)
+
+    format_valid = None
+    if reward_extra_info is not None and "format_valid" in reward_extra_info:
+        format_valid = np.asarray(reward_extra_info["format_valid"], dtype=bool)
+    elif "format_valid" in batch.non_tensor_batch:
+        format_valid = np.asarray(batch.non_tensor_batch["format_valid"], dtype=bool)
+
+    group_indices: dict[object, list[int]] = defaultdict(list)
+    for idx, uid in enumerate(uids):
+        group_indices[uid].append(idx)
+
+    reason_counts = defaultdict(int)
+    group_reward_vars = []
+    group_token_fracs = defaultdict(float)
+    sample_invalid_mask = np.zeros(len(batch), dtype=bool)
+
+    for indices in group_indices.values():
+        group_rewards = sequence_reward[indices]
+        group_lengths = response_lengths[indices].detach().cpu().numpy()
+        unique_responses = {
+            tuple(batch.batch["responses"][i, : int(response_lengths[i].item())].detach().cpu().tolist()) for i in indices
+        }
+
+        group_reward_vars.append(float(np.var(group_rewards)))
+
+        primary_reason = "mixed"
+        if format_valid is not None and not np.any(format_valid[indices]):
+            primary_reason = "format_failure"
+        elif np.allclose(group_rewards, 1.0):
+            primary_reason = "all_one"
+        elif np.allclose(group_rewards, 0.0):
+            primary_reason = "all_zero"
+        elif np.all(group_lengths >= max_response_length):
+            primary_reason = "max_length"
+        elif len(unique_responses) <= 1 or (len(unique_responses) / max(len(indices), 1)) <= low_diversity_threshold:
+            primary_reason = "low_diversity"
+        elif float(np.mean(group_lengths)) <= short_answer_threshold:
+            primary_reason = "short_answer"
+
+        reason_counts[primary_reason] += 1
+        group_token_fracs[primary_reason] += float(group_lengths.sum())
+        if primary_reason != "mixed":
+            sample_invalid_mask[indices] = True
+
+    metrics = {
+        "rollout_invalid/group_count": len(group_indices),
+        "rollout_invalid/group_reason/format_failure_rate": reason_counts["format_failure"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/all_zero_rate": reason_counts["all_zero"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/all_one_rate": reason_counts["all_one"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/max_length_rate": reason_counts["max_length"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/low_diversity_rate": reason_counts["low_diversity"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/short_answer_rate": reason_counts["short_answer"] / max(len(group_indices), 1),
+        "rollout_invalid/group_reason/mixed_rate": reason_counts["mixed"] / max(len(group_indices), 1),
+        "rollout_invalid/reward_var_mean": float(np.mean(group_reward_vars)) if group_reward_vars else 0.0,
+        "rollout_invalid/reward_var_per_token": float(np.var(sequence_reward)) / total_response_tokens,
+    }
+
+    if format_valid is not None:
+        metrics["rollout_invalid/sample_format_failure_rate"] = float((~format_valid).mean())
+    metrics["rollout_invalid/sample_max_length_rate"] = float((response_lengths == max_response_length).float().mean().item())
+    metrics["rollout_invalid/sample_short_answer_rate"] = float(
+        (response_lengths <= short_answer_threshold).float().mean().item()
+    )
+    metrics["rollout_invalid/sample_invalid_token_frac"] = float(response_lengths[sample_invalid_mask].sum().item()) / total_response_tokens
+    metrics["rollout_invalid/sample_low_diversity_token_frac"] = metrics["rollout_invalid/sample_invalid_token_frac"]
+
+    metrics["rollout_invalid/group_invalid_token_frac"] = (
+        group_token_fracs["format_failure"]
+        + group_token_fracs["all_zero"]
+        + group_token_fracs["all_one"]
+        + group_token_fracs["max_length"]
+        + group_token_fracs["low_diversity"]
+        + group_token_fracs["short_answer"]
+    ) / total_response_tokens
+
+    return metrics
+
+
 def compute_timing_metrics(batch: DataProto, timing_raw: dict[str, float]) -> dict[str, Any]:
     """
     Computes timing metrics for different processing stages in PPO training.
