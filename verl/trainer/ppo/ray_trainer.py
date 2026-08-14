@@ -457,13 +457,25 @@ class RayPPOTrainer:
 
         lines = []
         for i in range(n):
-            entry = {k: v[i] for k, v in base_data.items()}
+            entry = {k: self._json_safe(v[i]) for k, v in base_data.items()}
             lines.append(json.dumps(entry, ensure_ascii=False))
 
         with open(filename, "w") as f:
             f.write("\n".join(lines) + "\n")
 
         print(f"Dumped generations to {filename}")
+
+    @staticmethod
+    def _json_safe(value):
+        if isinstance(value, np.generic):
+            return value.item()
+        if isinstance(value, np.ndarray):
+            return value.tolist()
+        if isinstance(value, dict):
+            return {str(k): RayPPOTrainer._json_safe(v) for k, v in value.items()}
+        if isinstance(value, list | tuple):
+            return [RayPPOTrainer._json_safe(item) for item in value]
+        return value
 
     def _log_rollout_data(
         self, batch: DataProto, reward_extra_infos_dict: dict, timing_raw: dict, rollout_data_dir: str
@@ -481,9 +493,75 @@ class RayPPOTrainer:
             scores = batch.batch["token_level_scores"].sum(-1).cpu().tolist()
             sample_gts = [item.non_tensor_batch.get("reward_model", {}).get("ground_truth", None) for item in batch]
 
-            reward_extra_infos_to_dump = reward_extra_infos_dict.copy()
+            reward_extra_infos_to_dump = {
+                key: value for key, value in reward_extra_infos_dict.items() if len(value) == len(batch)
+            }
+            for key in ("score", "acc", "format_valid", "correct", "overlong", "overlong_reward"):
+                if key in batch.non_tensor_batch and key not in reward_extra_infos_to_dump:
+                    value = batch.non_tensor_batch[key]
+                    if len(value) == len(batch):
+                        reward_extra_infos_to_dump[key] = value.tolist() if hasattr(value, "tolist") else value
+            response_mask = batch.batch["response_mask"].bool()
+            response_lengths = response_mask.sum(dim=-1)
+            response_lengths_list = response_lengths.cpu().tolist()
+            max_response_length = batch.batch["responses"].shape[-1]
+            reward_extra_infos_to_dump["response_length"] = response_lengths_list
+            reward_extra_infos_to_dump["max_response_length"] = [max_response_length] * len(batch)
+
+            if "uid" in batch.non_tensor_batch:
+                reward_extra_infos_to_dump["uid"] = [str(uid) for uid in batch.non_tensor_batch["uid"].tolist()]
+            if "data_source" in batch.non_tensor_batch:
+                reward_extra_infos_to_dump["data_source"] = [
+                    str(data_source) for data_source in batch.non_tensor_batch["data_source"].tolist()
+                ]
+
+            format_valid = None
+            if "format_valid" in reward_extra_infos_to_dump:
+                format_valid = np.asarray(reward_extra_infos_to_dump["format_valid"], dtype=bool)
+
+            uids = np.asarray(
+                reward_extra_infos_to_dump.get("uid", list(range(len(batch)))),
+                dtype=object,
+            )
+            sequence_scores = np.asarray(scores, dtype=float)
+            group_indices: dict[object, list[int]] = defaultdict(list)
+            for idx, uid in enumerate(uids):
+                group_indices[uid].append(idx)
+
+            group_reason = ["mixed"] * len(batch)
+            group_reward_var = [0.0] * len(batch)
+            for indices in group_indices.values():
+                group_scores = sequence_scores[indices]
+                group_lengths = response_lengths[indices].detach().cpu().numpy()
+                unique_responses = {
+                    tuple(batch.batch["responses"][i, : int(response_lengths[i].item())].detach().cpu().tolist())
+                    for i in indices
+                }
+
+                reason = "mixed"
+                if format_valid is not None and not np.any(format_valid[indices]):
+                    reason = "format_failure"
+                elif np.allclose(group_scores, 1.0):
+                    reason = "all_one"
+                elif np.allclose(group_scores, 0.0):
+                    reason = "all_zero"
+                elif np.all(group_lengths >= max_response_length):
+                    reason = "max_length"
+                elif len(unique_responses) <= 1 or (len(unique_responses) / max(len(indices), 1)) <= 0.5:
+                    reason = "low_diversity"
+                elif float(np.mean(group_lengths)) <= 8:
+                    reason = "short_answer"
+
+                reward_var = float(np.var(group_scores))
+                for idx in indices:
+                    group_reason[idx] = reason
+                    group_reward_var[idx] = reward_var
+
+            reward_extra_infos_to_dump["group_reason"] = group_reason
+            reward_extra_infos_to_dump["group_reward_var"] = group_reward_var
+
             if "request_id" in batch.non_tensor_batch:
-                reward_extra_infos_dict.setdefault(
+                reward_extra_infos_to_dump.setdefault(
                     "request_id",
                     batch.non_tensor_batch["request_id"].tolist(),
                 )
