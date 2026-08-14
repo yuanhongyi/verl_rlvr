@@ -267,6 +267,26 @@ class RayDAPOTrainer(RayPPOTrainer):
                         ]
                         num_prompt_in_batch += len(kept_prompt_uids)
 
+                        rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+                        if rollout_data_dir:
+                            candidate_reward_extra_infos = {
+                                key: value for key, value in reward_extra_infos_dict.items() if len(value) == len(new_batch)
+                            }
+                            candidate_reward_extra_infos["dump_phase"] = ["candidate"] * len(new_batch)
+                            candidate_reward_extra_infos["gen_batch_index"] = [num_gen_batches] * len(new_batch)
+                            candidate_reward_extra_infos["filter_kept"] = [
+                                uid in kept_prompt_uids for uid in new_batch.non_tensor_batch["uid"]
+                            ]
+                            candidate_reward_extra_infos["filter_metric"] = [metric_name] * len(new_batch)
+                            self._log_rollout_data(
+                                new_batch,
+                                candidate_reward_extra_infos,
+                                timing_raw,
+                                os.path.join(rollout_data_dir, "candidates"),
+                                filename_suffix="_candidates",
+                                append=True,
+                            )
+
                         kept_traj_idxs = []
                         for idx, traj_from_prompt_uid in enumerate(new_batch.non_tensor_batch["uid"]):
                             if traj_from_prompt_uid in kept_prompt_uids:
@@ -355,7 +375,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                     # Log rollout generations if enabled
                     rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                     if rollout_data_dir:
-                        self._log_rollout_data(batch, reward_extra_infos_dict, timing_raw, rollout_data_dir)
+                        kept_reward_extra_infos = {"dump_phase": ["kept"] * len(batch)}
+                        self._log_rollout_data(batch, kept_reward_extra_infos, timing_raw, rollout_data_dir)
 
                 # validate
                 if (
