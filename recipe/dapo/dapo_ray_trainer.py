@@ -40,6 +40,7 @@ from verl.trainer.ppo.reward import compute_reward
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
+from src.all_one_scheduler import AllOneScheduler
 
 
 class RayDAPOTrainer(RayPPOTrainer):
@@ -93,6 +94,21 @@ class RayDAPOTrainer(RayPPOTrainer):
 
         self.global_steps = 0
         self.gen_steps = 0
+
+        scheduler_cfg = self.config.trainer.get("all_one_scheduler", {})
+        self.all_one_scheduler = None
+        if scheduler_cfg.get("enable", False):
+            self.all_one_scheduler = AllOneScheduler(
+                temperature=float(self.config.actor_rollout_ref.rollout.temperature),
+                threshold=float(scheduler_cfg.get("threshold", 0.5)),
+                boost=float(scheduler_cfg.get("boost", 0.1)),
+                lower_threshold=float(scheduler_cfg.get("lower_threshold", 0.02)),
+                decay=float(scheduler_cfg.get("decay", 0.05)),
+                min_temperature=float(
+                    scheduler_cfg.get("min_temperature", self.config.actor_rollout_ref.rollout.temperature)
+                ),
+                max_temperature=float(scheduler_cfg.get("max_temperature", 1.5)),
+            )
 
         # load checkpoint before doing anything
         self._load_checkpoint()
@@ -158,6 +174,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                 gen_batch_output = gen_batch.repeat(
                     repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
                 )
+                if self.all_one_scheduler is not None:
+                    gen_batch_output.meta_info["temperature"] = self.all_one_scheduler.temperature
 
                 is_last_step = self.global_steps >= self.total_training_steps
 
@@ -259,6 +277,22 @@ class RayDAPOTrainer(RayPPOTrainer):
                         prompt_uid2metric_std = {}
                         for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
                             prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
+
+                        if self.all_one_scheduler is not None:
+                            all_one_groups = sum(
+                                np.allclose(metric_vals, 1.0)
+                                for metric_vals in prompt_uid2metric_vals.values()
+                            )
+                            all_one_rate = all_one_groups / max(len(prompt_uid2metric_vals), 1)
+                            scheduler_metrics = self.all_one_scheduler.update(all_one_rate)
+                            metrics.update(
+                                {
+                                    "rollout/all_one_rate": all_one_rate,
+                                    "rollout/all_one_temperature_used": scheduler_metrics["temperature_before"],
+                                    "rollout/all_one_temperature": scheduler_metrics["temperature_after"],
+                                    "rollout/all_one_scheduler_action": scheduler_metrics["action_code"],
+                                }
+                            )
 
                         kept_prompt_uids = [
                             uid
