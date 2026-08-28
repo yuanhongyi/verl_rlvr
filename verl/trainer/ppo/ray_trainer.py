@@ -502,7 +502,15 @@ class RayPPOTrainer:
             reward_extra_infos_to_dump = {
                 key: value for key, value in reward_extra_infos_dict.items() if len(value) == len(batch)
             }
-            for key in ("score", "acc", "format_valid", "correct", "overlong", "overlong_reward"):
+            for key in (
+                "score",
+                "acc",
+                "format_valid",
+                "format_repaired",
+                "correct",
+                "overlong",
+                "overlong_reward",
+            ):
                 if key in batch.non_tensor_batch and key not in reward_extra_infos_to_dump:
                     value = batch.non_tensor_batch[key]
                     if len(value) == len(batch):
