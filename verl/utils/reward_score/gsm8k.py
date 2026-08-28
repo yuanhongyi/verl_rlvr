@@ -78,3 +78,30 @@ def compute_score(solution_str, ground_truth, method="strict", format_score=0.0,
         "format_valid": True,
         "correct": is_correct,
     }
+
+
+def compute_score_with_format_repair(solution_str, ground_truth, score=1.0):
+    """Recover an untagged GSM8K answer without changing the original text.
+
+    The strict parser remains the source of truth. Repair is only considered when
+    the response has no ``####`` answer but the flexible parser can identify a
+    final numeric answer. The repaired result is explicitly marked for ablation.
+    """
+    strict_result = compute_score(solution_str, ground_truth, score=score)
+    if strict_result["format_valid"]:
+        strict_result["format_repaired"] = False
+        return strict_result
+
+    repaired_answer = extract_solution(solution_str, method="flexible")
+    if repaired_answer is None:
+        strict_result["format_repaired"] = False
+        return strict_result
+
+    is_correct = repaired_answer == ground_truth
+    return {
+        "score": score if is_correct else 0.0,
+        "acc": 1.0 if is_correct else 0.0,
+        "format_valid": True,
+        "correct": is_correct,
+        "format_repaired": True,
+    }

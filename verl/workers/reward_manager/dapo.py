@@ -34,6 +34,7 @@ class DAPORewardManager(AbstractRewardManager):
         reward_fn_key="data_source",
         max_resp_len=None,
         overlong_buffer_cfg=None,
+        format_repair=False,
     ) -> None:
         self.tokenizer = tokenizer
         self.num_examine = num_examine  # the number of batches of decoded responses to print to the console
@@ -41,6 +42,7 @@ class DAPORewardManager(AbstractRewardManager):
         self.reward_fn_key = reward_fn_key
         self.overlong_buffer_cfg = overlong_buffer_cfg
         self.max_resp_len = max_resp_len
+        self.format_repair = format_repair
 
         if self.overlong_buffer_cfg is not None:
             assert self.max_resp_len is not None, (
@@ -98,12 +100,15 @@ class DAPORewardManager(AbstractRewardManager):
 
             extra_info["rollout_reward_scores"] = rollout_reward_scores
 
-            result = self.compute_score(
-                data_source=data_source,
-                solution_str=response_str,
-                ground_truth=ground_truth,
-                extra_info=extra_info,
-            )
+            score_kwargs = {
+                "data_source": data_source,
+                "solution_str": response_str,
+                "ground_truth": ground_truth,
+                "extra_info": extra_info,
+            }
+            if self.format_repair:
+                score_kwargs["format_repair"] = True
+            result = self.compute_score(**score_kwargs)
 
             score: float
             if isinstance(result, dict):
