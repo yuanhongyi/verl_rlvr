@@ -41,6 +41,7 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
 from src.all_one_scheduler import AllOneScheduler
+from src.group_signal_metrics import classify_group_rates
 
 
 class RayDAPOTrainer(RayPPOTrainer):
@@ -278,16 +279,20 @@ class RayDAPOTrainer(RayPPOTrainer):
                         for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
                             prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
 
+                        group_signal_metrics = classify_group_rates(prompt_uid2metric_vals.values())
+                        metrics.update(
+                            {
+                                "rollout/all_zero_rate": group_signal_metrics["all_zero_rate"],
+                                "rollout/all_one_rate": group_signal_metrics["all_one_rate"],
+                                "rollout/mixed_rate": group_signal_metrics["mixed_rate"],
+                            }
+                        )
+
                         if self.all_one_scheduler is not None:
-                            all_one_groups = sum(
-                                np.allclose(metric_vals, 1.0)
-                                for metric_vals in prompt_uid2metric_vals.values()
-                            )
-                            all_one_rate = all_one_groups / max(len(prompt_uid2metric_vals), 1)
+                            all_one_rate = group_signal_metrics["all_one_rate"]
                             scheduler_metrics = self.all_one_scheduler.update(all_one_rate)
                             metrics.update(
                                 {
-                                    "rollout/all_one_rate": all_one_rate,
                                     "rollout/all_one_temperature_used": scheduler_metrics["temperature_before"],
                                     "rollout/all_one_temperature": scheduler_metrics["temperature_after"],
                                     "rollout/all_one_scheduler_action": scheduler_metrics["action_code"],
