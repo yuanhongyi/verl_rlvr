@@ -40,6 +40,7 @@ from verl.trainer.ppo.reward import compute_reward
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
+from src.training_schedule import epochs_for_steps
 
 
 class RayDAPOTrainer(RayPPOTrainer):
@@ -131,7 +132,11 @@ class RayDAPOTrainer(RayPPOTrainer):
         batch = None
         num_prompt_in_batch = 0
         num_gen_batches = 0
-        for epoch in range(self.config.trainer.total_epochs):
+        effective_epochs = max(
+            int(self.config.trainer.total_epochs),
+            epochs_for_steps(self.total_training_steps, len(self.train_dataloader)),
+        )
+        for epoch in range(effective_epochs):
             for batch_dict in self.train_dataloader:
                 if hasattr(self.actor_rollout_wg, "async_calls_finalize_fn_exec"):
                     self.actor_rollout_wg.async_calls_finalize_fn_exec(blocking=False)
