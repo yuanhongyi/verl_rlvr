@@ -283,6 +283,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                             prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
 
                         group_signal_metrics = classify_group_rates(prompt_uid2metric_vals.values())
+                        scheduler_dump_info = {}
                         metrics.update(
                             {
                                 "rollout/all_zero_rate": group_signal_metrics["all_zero_rate"],
@@ -304,6 +305,14 @@ class RayDAPOTrainer(RayPPOTrainer):
                                     if scheduler_metrics["action"] == "COOLDOWN_ALL_ZERO" else 0.0,
                                 }
                             )
+                            scheduler_dump_info = {
+                                "scheduler_all_one_rate": all_one_rate,
+                                "scheduler_all_zero_rate": all_zero_rate,
+                                "scheduler_mixed_rate": group_signal_metrics["mixed_rate"],
+                                "scheduler_temperature_used": scheduler_metrics["temperature_before"],
+                                "scheduler_temperature_after": scheduler_metrics["temperature_after"],
+                                "scheduler_action": scheduler_metrics["action"],
+                            }
 
                         kept_prompt_uids = [
                             uid
@@ -323,6 +332,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                                 uid in kept_prompt_uids for uid in new_batch.non_tensor_batch["uid"]
                             ]
                             candidate_reward_extra_infos["filter_metric"] = [metric_name] * len(new_batch)
+                            for key, value in scheduler_dump_info.items():
+                                candidate_reward_extra_infos[key] = [value] * len(new_batch)
                             self._log_rollout_data(
                                 new_batch,
                                 candidate_reward_extra_infos,
