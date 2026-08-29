@@ -109,6 +109,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                     scheduler_cfg.get("min_temperature", self.config.actor_rollout_ref.rollout.temperature)
                 ),
                 max_temperature=float(scheduler_cfg.get("max_temperature", 1.5)),
+                all_zero_threshold=float(scheduler_cfg.get("all_zero_threshold", 1.1)),
+                all_zero_decay=float(scheduler_cfg.get("all_zero_decay", 0.05)),
             )
 
         # load checkpoint before doing anything
@@ -290,12 +292,15 @@ class RayDAPOTrainer(RayPPOTrainer):
 
                         if self.all_one_scheduler is not None:
                             all_one_rate = group_signal_metrics["all_one_rate"]
-                            scheduler_metrics = self.all_one_scheduler.update(all_one_rate)
+                            all_zero_rate = group_signal_metrics["all_zero_rate"]
+                            scheduler_metrics = self.all_one_scheduler.update(all_one_rate, all_zero_rate)
                             metrics.update(
                                 {
                                     "rollout/all_one_temperature_used": scheduler_metrics["temperature_before"],
                                     "rollout/all_one_temperature": scheduler_metrics["temperature_after"],
                                     "rollout/all_one_scheduler_action": scheduler_metrics["action_code"],
+                                    "rollout/all_zero_scheduler_action": scheduler_metrics["action_code"]
+                                    if scheduler_metrics["action"] == "COOLDOWN_ALL_ZERO" else 0.0,
                                 }
                             )
 
