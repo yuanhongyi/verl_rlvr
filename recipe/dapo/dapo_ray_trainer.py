@@ -42,6 +42,7 @@ from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
 from src.all_one_scheduler import AllOneScheduler
 from src.group_signal_metrics import classify_group_rates
+from src.training_schedule import epochs_for_steps
 
 
 class RayDAPOTrainer(RayPPOTrainer):
@@ -151,7 +152,11 @@ class RayDAPOTrainer(RayPPOTrainer):
         batch = None
         num_prompt_in_batch = 0
         num_gen_batches = 0
-        for epoch in range(self.config.trainer.total_epochs):
+        effective_epochs = max(
+            int(self.config.trainer.total_epochs),
+            epochs_for_steps(self.total_training_steps, len(self.train_dataloader)),
+        )
+        for epoch in range(effective_epochs):
             for batch_dict in self.train_dataloader:
                 metrics = {}
 
