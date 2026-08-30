@@ -113,6 +113,8 @@ class RayDAPOTrainer(RayPPOTrainer):
                 all_zero_threshold=float(scheduler_cfg.get("all_zero_threshold", 1.1)),
                 all_zero_decay=float(scheduler_cfg.get("all_zero_decay", 0.05)),
                 all_zero_patience=int(scheduler_cfg.get("all_zero_patience", 2)),
+                all_one_patience=int(scheduler_cfg.get("all_one_patience", 3)),
+                stagnation_decay=float(scheduler_cfg.get("stagnation_decay", 0.05)),
             )
 
         # load checkpoint before doing anything
