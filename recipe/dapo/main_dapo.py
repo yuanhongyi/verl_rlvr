@@ -97,8 +97,13 @@ class TaskRunner:
         if config.actor_rollout_ref.actor.strategy in {"fsdp", "fsdp2"}:
             assert config.critic.strategy in {"fsdp", "fsdp2"}
 
-            from verl.workers.fsdp_workers import ActorRolloutRefWorker, CriticWorker
+            from verl.workers.fsdp_workers import AsyncActorRolloutRefWorker, ActorRolloutRefWorker, CriticWorker
 
+            actor_rollout_cls = (
+                AsyncActorRolloutRefWorker
+                if config.actor_rollout_ref.rollout.mode == "async"
+                else ActorRolloutRefWorker
+            )
             ray_worker_group_cls = RayWorkerGroup
 
         elif config.actor_rollout_ref.actor.strategy == "megatron":
@@ -113,7 +118,7 @@ class TaskRunner:
         from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
 
         role_worker_mapping = {
-            Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
+            Role.ActorRollout: ray.remote(actor_rollout_cls),
             Role.Critic: ray.remote(CriticWorker),
         }
 
