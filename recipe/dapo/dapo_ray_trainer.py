@@ -43,6 +43,7 @@ from verl.utils.rollout_skip import RolloutSkip
 from src.all_one_scheduler import AllOneScheduler
 from src.group_signal_metrics import classify_group_rates
 from src.training_schedule import epochs_for_steps
+from src.prompt_router import PromptRouter
 
 
 class RayDAPOTrainer(RayPPOTrainer):
@@ -96,6 +97,14 @@ class RayDAPOTrainer(RayPPOTrainer):
 
         self.global_steps = 0
         self.gen_steps = 0
+
+        prompt_router_cfg = self.config.trainer.get("prompt_router", {})
+        self.prompt_router = None
+        if prompt_router_cfg.get("enable", False):
+            self.prompt_router = PromptRouter(
+                easy_patience=int(prompt_router_cfg.get("easy_patience", 2)),
+                hard_patience=int(prompt_router_cfg.get("hard_patience", 2)),
+            )
 
         scheduler_cfg = self.config.trainer.get("all_one_scheduler", {})
         self.all_one_scheduler = None
@@ -292,6 +301,25 @@ class RayDAPOTrainer(RayPPOTrainer):
 
                         group_signal_metrics = classify_group_rates(prompt_uid2metric_vals.values())
                         scheduler_dump_info = {}
+                        prompt_route_info = {}
+                        if self.prompt_router is not None:
+                            uid_to_indices = defaultdict(list)
+                            for idx, uid in enumerate(new_batch.non_tensor_batch["uid"]):
+                                uid_to_indices[uid].append(idx)
+                            prompt_rows = new_batch.batch["prompts"]
+                            for uid, indices in uid_to_indices.items():
+                                prompt_key = self.prompt_router.prompt_key(
+                                    prompt_rows[indices[0]].detach().cpu().tolist()
+                                )
+                                group_rewards = np.asarray(prompt_uid2metric_vals[uid], dtype=float)
+                                if np.allclose(group_rewards, 0.0):
+                                    group_reason = "all_zero"
+                                elif np.allclose(group_rewards, 1.0):
+                                    group_reason = "all_one"
+                                else:
+                                    group_reason = "mixed"
+                                route = self.prompt_router.update(prompt_key, group_reason)
+                                prompt_route_info[uid] = {"prompt_key": prompt_key, **route}
                         metrics.update(
                             {
                                 "rollout/all_zero_rate": group_signal_metrics["all_zero_rate"],
@@ -342,6 +370,17 @@ class RayDAPOTrainer(RayPPOTrainer):
                             candidate_reward_extra_infos["filter_metric"] = [metric_name] * len(new_batch)
                             for key, value in scheduler_dump_info.items():
                                 candidate_reward_extra_infos[key] = [value] * len(new_batch)
+                            for field in (
+                                "prompt_key",
+                                "prompt_route",
+                                "prompt_budget_multiplier",
+                                "prompt_seen_count",
+                                "prompt_all_one_streak",
+                                "prompt_all_zero_streak",
+                            ):
+                                candidate_reward_extra_infos[field] = [
+                                    prompt_route_info.get(uid, {}).get(field) for uid in new_batch.non_tensor_batch["uid"]
+                                ]
                             self._log_rollout_data(
                                 new_batch,
                                 candidate_reward_extra_infos,
