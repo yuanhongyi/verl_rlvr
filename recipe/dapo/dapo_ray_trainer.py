@@ -40,6 +40,7 @@ from verl.trainer.ppo.reward import compute_reward
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
+from src.group_signal_metrics import classify_group_rates
 from src.training_schedule import epochs_for_steps
 
 
@@ -256,6 +257,15 @@ class RayDAPOTrainer(RayPPOTrainer):
                         prompt_uid2metric_std = {}
                         for prompt_uid, metric_vals in prompt_uid2metric_vals.items():
                             prompt_uid2metric_std[prompt_uid] = np.std(metric_vals)
+
+                        group_signal_metrics = classify_group_rates(prompt_uid2metric_vals.values())
+                        metrics.update(
+                            {
+                                "rollout/all_zero_rate": group_signal_metrics["all_zero_rate"],
+                                "rollout/all_one_rate": group_signal_metrics["all_one_rate"],
+                                "rollout/mixed_rate": group_signal_metrics["mixed_rate"],
+                            }
+                        )
 
                         kept_prompt_uids = [
                             uid
