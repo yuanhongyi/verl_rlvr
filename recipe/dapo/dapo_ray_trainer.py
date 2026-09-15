@@ -37,6 +37,7 @@ from verl.trainer.ppo.ray_trainer import (
     compute_response_mask,
 )
 from verl.trainer.ppo.reward import compute_reward
+from verl.utils.hard_prompt_recovery import add_process_hint, all_zero_uids, source_indices_for_uids
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
@@ -104,6 +105,15 @@ class RayDAPOTrainer(RayPPOTrainer):
                 easy_patience=int(prompt_router_cfg.get("easy_patience", 2)),
                 hard_patience=int(prompt_router_cfg.get("hard_patience", 2)),
             )
+
+        recovery_cfg = self.config.trainer.get("hard_prompt_recovery", {})
+        self.hard_prompt_recovery = bool(recovery_cfg.get("enable", False))
+        self.hard_prompt_recovery_hint = str(recovery_cfg.get("hint", "")) or None
+        if self.hard_prompt_recovery:
+            if not self.async_rollout_mode or not self.config.algorithm.filter_groups.enable:
+                raise ValueError("hard_prompt_recovery requires async rollout and filter_groups")
+            if self.use_rm or self.config.algorithm.use_kl_in_reward:
+                raise ValueError("hard_prompt_recovery currently supports function rewards without KL-in-reward")
 
         # load checkpoint before doing anything
         self._load_checkpoint()
@@ -202,6 +212,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                     new_batch.non_tensor_batch["uid"] = np.array(
                         [str(uuid.uuid4()) for _ in range(len(new_batch.batch))], dtype=object
                     )
+                    source_batch = new_batch
                     # repeat to align with repeated responses in rollout
                     new_batch = new_batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True)
                     new_batch = new_batch.union(gen_batch_output)
@@ -255,6 +266,116 @@ class RayDAPOTrainer(RayPPOTrainer):
                             new_batch.non_tensor_batch["seq_reward"] = (
                                 new_batch.batch["token_level_scores"].sum(dim=-1).numpy()
                             )
+
+                        if self.hard_prompt_recovery:
+                            initial_uid2metric_vals = defaultdict(list)
+                            for uid, metric_val in zip(
+                                new_batch.non_tensor_batch["uid"],
+                                new_batch.non_tensor_batch[metric_name],
+                                strict=True,
+                            ):
+                                initial_uid2metric_vals[uid].append(metric_val)
+                            recovery_uids = all_zero_uids(initial_uid2metric_vals)
+                            if recovery_uids:
+                                recovery_uid_set = set(recovery_uids)
+                                source_indices = source_indices_for_uids(
+                                    source_batch.non_tensor_batch["uid"], recovery_uids
+                                )
+                                recovery_gen_batch = gen_batch.select_idxs(source_indices)
+                                hint_kwargs = {}
+                                if self.hard_prompt_recovery_hint is not None:
+                                    hint_kwargs["hint"] = self.hard_prompt_recovery_hint
+                                recovery_gen_batch.non_tensor_batch["raw_prompt"] = np.array(
+                                    [
+                                        add_process_hint(prompt, **hint_kwargs)
+                                        for prompt in recovery_gen_batch.non_tensor_batch["raw_prompt"]
+                                    ],
+                                    dtype=object,
+                                )
+                                recovery_gen_batch = recovery_gen_batch.repeat(
+                                    repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                                )
+                                with marked_timer("recovery_gen", timing_raw, "red"):
+                                    recovery_output = self.async_rollout_manager.generate_sequences(recovery_gen_batch)
+                                    for key, value in recovery_output.meta_info.pop("timing", {}).items():
+                                        timing_raw[f"recovery/{key}"] += value
+
+                                recovery_batch = source_batch.select_idxs(source_indices).repeat(
+                                    repeat_times=self.config.actor_rollout_ref.rollout.n, interleave=True
+                                )
+                                recovery_batch = recovery_batch.union(recovery_output)
+                                recovery_reward, recovery_extra_infos = compute_reward(recovery_batch, self.reward_fn)
+                                recovery_batch.batch["token_level_scores"] = recovery_reward
+                                recovery_batch.batch["token_level_rewards"] = recovery_reward
+                                if recovery_extra_infos:
+                                    recovery_batch.non_tensor_batch.update(
+                                        {key: np.array(value) for key, value in recovery_extra_infos.items()}
+                                    )
+                                if metric_name == "seq_final_reward":
+                                    recovery_batch.non_tensor_batch["seq_final_reward"] = (
+                                        recovery_batch.batch["token_level_rewards"].sum(dim=-1).numpy()
+                                    )
+                                elif metric_name == "seq_reward":
+                                    recovery_batch.non_tensor_batch["seq_reward"] = (
+                                        recovery_batch.batch["token_level_scores"].sum(dim=-1).numpy()
+                                    )
+
+                                recovered_uid2metric_vals = defaultdict(list)
+                                for uid, metric_val in zip(
+                                    recovery_batch.non_tensor_batch["uid"],
+                                    recovery_batch.non_tensor_batch[metric_name],
+                                    strict=True,
+                                ):
+                                    recovered_uid2metric_vals[uid].append(metric_val)
+                                recovered_all_zero = set(all_zero_uids(recovered_uid2metric_vals))
+                                recovered_groups = len(recovery_uid_set - recovered_all_zero)
+
+                                rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
+                                if rollout_data_dir:
+                                    initial_indices = [
+                                        idx
+                                        for idx, uid in enumerate(new_batch.non_tensor_batch["uid"])
+                                        if uid in recovery_uid_set
+                                    ]
+                                    initial_batch = new_batch.select_idxs(initial_indices)
+                                    initial_extras = {
+                                        key: initial_batch.non_tensor_batch[key].tolist()
+                                        for key in reward_extra_infos_dict
+                                        if key in initial_batch.non_tensor_batch
+                                    }
+                                    initial_extras["dump_phase"] = ["recovery_initial"] * len(initial_batch)
+                                    self._log_rollout_data(
+                                        initial_batch,
+                                        initial_extras,
+                                        timing_raw,
+                                        os.path.join(rollout_data_dir, "recovery_initial"),
+                                        filename_suffix="_recovery_initial",
+                                        append=True,
+                                    )
+
+                                retained_indices = [
+                                    idx
+                                    for idx, uid in enumerate(new_batch.non_tensor_batch["uid"])
+                                    if uid not in recovery_uid_set
+                                ]
+                                recovered_flags = np.ones(len(recovery_batch), dtype=object)
+                                recovery_batch.non_tensor_batch["hard_recovery_attempted"] = recovered_flags
+                                if retained_indices:
+                                    retained_batch = new_batch.select_idxs(retained_indices)
+                                    retained_batch.non_tensor_batch["hard_recovery_attempted"] = np.zeros(
+                                        len(retained_batch), dtype=object
+                                    )
+                                    new_batch = DataProto.concat([retained_batch, recovery_batch])
+                                else:
+                                    new_batch = recovery_batch
+                                reward_extra_infos_dict = {
+                                    key: new_batch.non_tensor_batch[key].tolist()
+                                    for key in recovery_extra_infos
+                                    if key in new_batch.non_tensor_batch
+                                }
+                                metrics["recovery/attempted_groups"] = len(recovery_uids)
+                                metrics["recovery/recovered_groups"] = recovered_groups
+                                metrics["recovery/success_rate"] = recovered_groups / len(recovery_uids)
 
                         # Collect the sequence reward for each trajectory
                         prompt_uid2metric_vals = defaultdict(list)
@@ -313,6 +434,9 @@ class RayDAPOTrainer(RayPPOTrainer):
                                 uid in kept_prompt_uids for uid in new_batch.non_tensor_batch["uid"]
                             ]
                             candidate_reward_extra_infos["filter_metric"] = [metric_name] * len(new_batch)
+                            candidate_reward_extra_infos["hard_recovery_attempted"] = new_batch.non_tensor_batch.get(
+                                "hard_recovery_attempted", np.zeros(len(new_batch), dtype=object)
+                            ).tolist()
                             for field in (
                                 "prompt_key",
                                 "prompt_route",
