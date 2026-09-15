@@ -539,6 +539,11 @@ class RayPPOTrainer:
                 reward_extra_infos_to_dump["data_source"] = [
                     str(data_source) for data_source in batch.non_tensor_batch["data_source"].tolist()
                 ]
+            if "extra_info" in batch.non_tensor_batch:
+                extra_info = batch.non_tensor_batch["extra_info"]
+                reward_extra_infos_to_dump["extra_info"] = (
+                    extra_info.tolist() if hasattr(extra_info, "tolist") else list(extra_info)
+                )
 
             format_valid = None
             if "format_valid" in reward_extra_infos_to_dump:
