@@ -377,6 +377,10 @@ class RayDAPOTrainer(RayPPOTrainer):
                                 metrics["recovery/recovered_groups"] = recovered_groups
                                 metrics["recovery/success_rate"] = recovered_groups / len(recovery_uids)
 
+                        new_batch.non_tensor_batch.setdefault(
+                            "hard_recovery_attempted", np.zeros(len(new_batch), dtype=object)
+                        )
+
                         # Collect the sequence reward for each trajectory
                         prompt_uid2metric_vals = defaultdict(list)
                         for uid, metric_val in zip(
