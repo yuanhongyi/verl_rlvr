@@ -12,6 +12,20 @@ DEFAULT_PROCESS_HINT = (
 )
 
 
+def validate_recovery_response_length(value: object, max_response_length: int) -> int | None:
+    """Validate an optional generation cap used only for recovery rollouts."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("hard_prompt_recovery.response_length must be an integer")
+    if value < 1 or value > max_response_length:
+        raise ValueError(
+            "hard_prompt_recovery.response_length must be between 1 and "
+            f"the rollout response length ({max_response_length})"
+        )
+    return value
+
+
 def all_zero_uids(uid_to_values: Mapping[object, Sequence[float]]) -> list[object]:
     return [uid for uid, values in uid_to_values.items() if values and all(float(value) == 0.0 for value in values)]
 

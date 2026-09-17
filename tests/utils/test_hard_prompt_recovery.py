@@ -6,6 +6,7 @@ from verl.utils.hard_prompt_recovery import (
     add_process_hint,
     all_zero_uids,
     source_indices_for_uids,
+    validate_recovery_response_length,
 )
 
 
@@ -27,3 +28,14 @@ def test_add_process_hint_copies_messages():
 def test_add_process_hint_rejects_decoded_text():
     with pytest.raises(ValueError, match="raw_prompt"):
         add_process_hint("system\nSolve")
+
+
+def test_validate_recovery_response_length():
+    assert validate_recovery_response_length(None, 128) is None
+    assert validate_recovery_response_length(64, 128) == 64
+
+    with pytest.raises(ValueError, match="between 1"):
+        validate_recovery_response_length(129, 128)
+
+    with pytest.raises(ValueError, match="must be an integer"):
+        validate_recovery_response_length(True, 128)

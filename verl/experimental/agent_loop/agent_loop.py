@@ -430,6 +430,13 @@ class AgentLoopWorkerBase:
             repetition_penalty=1.0,
             logprobs=config.calculate_log_probs,
         )
+        if "max_tokens" in batch.meta_info:
+            max_tokens = int(batch.meta_info["max_tokens"])
+            if not 1 <= max_tokens <= int(config.response_length):
+                raise ValueError(
+                    f"max_tokens must be between 1 and rollout response_length ({config.response_length})"
+                )
+            sampling_params["max_tokens"] = max_tokens
 
         # override sampling params for validation
         if batch.meta_info.get("validate", False):

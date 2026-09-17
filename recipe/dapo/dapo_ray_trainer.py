@@ -37,7 +37,12 @@ from verl.trainer.ppo.ray_trainer import (
     compute_response_mask,
 )
 from verl.trainer.ppo.reward import compute_reward
-from verl.utils.hard_prompt_recovery import add_process_hint, all_zero_uids, source_indices_for_uids
+from verl.utils.hard_prompt_recovery import (
+    add_process_hint,
+    all_zero_uids,
+    source_indices_for_uids,
+    validate_recovery_response_length,
+)
 from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
@@ -109,6 +114,10 @@ class RayDAPOTrainer(RayPPOTrainer):
         recovery_cfg = self.config.trainer.get("hard_prompt_recovery", {})
         self.hard_prompt_recovery = bool(recovery_cfg.get("enable", False))
         self.hard_prompt_recovery_hint = str(recovery_cfg.get("hint", "")) or None
+        self.hard_prompt_recovery_response_length = validate_recovery_response_length(
+            recovery_cfg.get("response_length"),
+            int(self.config.actor_rollout_ref.rollout.response_length),
+        )
         if self.hard_prompt_recovery:
             if not self.async_rollout_mode or not self.config.algorithm.filter_groups.enable:
                 raise ValueError("hard_prompt_recovery requires async rollout and filter_groups")
@@ -282,6 +291,10 @@ class RayDAPOTrainer(RayPPOTrainer):
                                     source_batch.non_tensor_batch["uid"], recovery_uids
                                 )
                                 recovery_gen_batch = gen_batch.select_idxs(source_indices)
+                                if self.hard_prompt_recovery_response_length is not None:
+                                    recovery_gen_batch.meta_info["max_tokens"] = (
+                                        self.hard_prompt_recovery_response_length
+                                    )
                                 hint_kwargs = {}
                                 if self.hard_prompt_recovery_hint is not None:
                                     hint_kwargs["hint"] = self.hard_prompt_recovery_hint
