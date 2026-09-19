@@ -7,8 +7,10 @@ from copy import deepcopy
 
 
 DEFAULT_PROCESS_HINT = (
-    "Before giving the final answer, identify the relevant quantities, choose the required "
-    "arithmetic operations, and calculate them step by step."
+    "Re-solve the problem using a different approach, but keep the calculation brief. "
+    "Reserve enough tokens for the answer. Even if the reasoning is incomplete, end with "
+    "your best numeric answer on a final line exactly `#### <number>`, and write nothing "
+    "after it."
 )
 
 

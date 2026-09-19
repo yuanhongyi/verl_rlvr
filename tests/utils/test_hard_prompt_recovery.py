@@ -22,6 +22,9 @@ def test_add_process_hint_copies_messages():
     recovered = add_process_hint(original)
     assert DEFAULT_PROCESS_HINT in recovered[0]["content"]
     assert recovered[1] == original[1]
+    assert "#### <number>" in recovered[0]["content"]
+    assert "write nothing after it" in recovered[0]["content"]
+    assert "step by step" not in recovered[0]["content"]
     assert original[0]["content"] == "Solve."
 
 
