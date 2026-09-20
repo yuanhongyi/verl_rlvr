@@ -88,7 +88,11 @@ class DAPORewardManager(AbstractRewardManager):
 
             data_source = data_item.non_tensor_batch[self.reward_fn_key]
 
-            extra_info = data_item.non_tensor_batch.get("extra_info", {})
+            extra_info = dict(data_item.non_tensor_batch.get("extra_info", {}))
+            extra_info["response_length"] = int(valid_response_length)
+            extra_info["max_response_length"] = int(
+                self.max_resp_len or response_ids.shape[-1]
+            )
 
             rollout_reward_scores = data_item.non_tensor_batch.get("reward_scores", {})
 
