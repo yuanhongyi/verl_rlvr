@@ -20,6 +20,7 @@ import os
 import uuid
 from collections import defaultdict
 from copy import deepcopy
+from pathlib import Path
 from pprint import pprint
 
 import numpy as np
@@ -47,6 +48,7 @@ from verl.utils.metric import reduce_metrics
 from verl.utils.profiler import marked_timer
 from verl.utils.rollout_skip import RolloutSkip
 from src.group_signal_metrics import classify_group_rates
+from src.partial_trajectory import append_jsonl, build_group_records
 from src.prompt_router import PromptRouter
 from src.training_schedule import epochs_for_steps
 
@@ -82,6 +84,44 @@ class RayDAPOTrainer(RayPPOTrainer):
 
         return batch
 
+    def _dump_partial_trajectory_records(self, batch: DataProto, rollout_data_dir: str, gen_batch_index: int):
+        """Reconstruct prefix snapshots without changing rollout behavior."""
+        response_mask = batch.batch.get("response_mask", compute_response_mask(batch)).bool()
+        response_lengths = response_mask.sum(dim=-1).detach().cpu().tolist()
+        response_ids = batch.batch["responses"].detach().cpu().tolist()
+        sequence_scores = batch.batch["token_level_scores"].sum(dim=-1).detach().cpu().tolist()
+        prompt_width = batch.batch["prompts"].shape[-1]
+        prompt_lengths = batch.batch["attention_mask"][:, :prompt_width].sum(dim=-1).detach().cpu().tolist()
+        uids = [str(uid) for uid in batch.non_tensor_batch["uid"].tolist()]
+        data_sources = batch.non_tensor_batch.get("data_source")
+        if data_sources is not None:
+            data_sources = [str(value) for value in data_sources.tolist()]
+
+        uid_to_indices = defaultdict(list)
+        for index, uid in enumerate(uids):
+            uid_to_indices[uid].append(index)
+
+        records = []
+        for uid, indices in uid_to_indices.items():
+            records.extend(
+                build_group_records(
+                    response_token_ids=[response_ids[index] for index in indices],
+                    response_lengths=[response_lengths[index] for index in indices],
+                    scores=[sequence_scores[index] for index in indices],
+                    uid=uid,
+                    prompt_tokens=prompt_lengths[indices[0]],
+                    tokenizer=self.tokenizer,
+                    checkpoints=self.partial_trajectory_checkpoints,
+                    step=self.global_steps,
+                    gen_batch_index=gen_batch_index,
+                    data_source=data_sources[indices[0]] if data_sources else None,
+                )
+            )
+
+        output_path = Path(rollout_data_dir) / "partial_trajectories" / f"{self.global_steps}_partial.jsonl"
+        written = append_jsonl(output_path, records)
+        print(f"Dumped {written} partial-trajectory records to {output_path}")
+
     def fit(self):
         """
         The training loop of PPO.
@@ -102,6 +142,12 @@ class RayDAPOTrainer(RayPPOTrainer):
 
         self.global_steps = 0
         self.gen_steps = 0
+
+        partial_trajectory_cfg = self.config.trainer.get("partial_trajectory", {})
+        self.partial_trajectory_telemetry = bool(partial_trajectory_cfg.get("enable", False))
+        self.partial_trajectory_checkpoints = tuple(
+            int(value) for value in partial_trajectory_cfg.get("checkpoints", [16, 32, 64, 128])
+        )
 
         prompt_router_cfg = self.config.trainer.get("prompt_router", {})
         self.prompt_router = None
@@ -442,6 +488,8 @@ class RayDAPOTrainer(RayPPOTrainer):
 
                         rollout_data_dir = self.config.trainer.get("rollout_data_dir", None)
                         if rollout_data_dir:
+                            if self.partial_trajectory_telemetry:
+                                self._dump_partial_trajectory_records(new_batch, rollout_data_dir, num_gen_batches)
                             candidate_reward_extra_infos = {
                                 key: value for key, value in reward_extra_infos_dict.items() if len(value) == len(new_batch)
                             }
