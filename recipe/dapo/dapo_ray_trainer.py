@@ -98,6 +98,15 @@ class RayDAPOTrainer(RayPPOTrainer):
             prompt_fingerprints = [
                 None if value is None else str(value) for value in prompt_fingerprints.tolist()
             ]
+        else:
+            extra_infos = batch.non_tensor_batch.get("extra_info")
+            if extra_infos is not None:
+                prompt_fingerprints = [
+                    str(value["prompt_fingerprint"])
+                    if isinstance(value, dict) and value.get("prompt_fingerprint")
+                    else None
+                    for value in extra_infos.tolist()
+                ]
         data_sources = batch.non_tensor_batch.get("data_source")
         if data_sources is not None:
             data_sources = [str(value) for value in data_sources.tolist()]
