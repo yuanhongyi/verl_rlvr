@@ -93,6 +93,11 @@ class RayDAPOTrainer(RayPPOTrainer):
         prompt_width = batch.batch["prompts"].shape[-1]
         prompt_lengths = batch.batch["attention_mask"][:, :prompt_width].sum(dim=-1).detach().cpu().tolist()
         uids = [str(uid) for uid in batch.non_tensor_batch["uid"].tolist()]
+        prompt_fingerprints = batch.non_tensor_batch.get("prompt_fingerprint")
+        if prompt_fingerprints is not None:
+            prompt_fingerprints = [
+                None if value is None else str(value) for value in prompt_fingerprints.tolist()
+            ]
         data_sources = batch.non_tensor_batch.get("data_source")
         if data_sources is not None:
             data_sources = [str(value) for value in data_sources.tolist()]
@@ -109,6 +114,7 @@ class RayDAPOTrainer(RayPPOTrainer):
                     response_lengths=[response_lengths[index] for index in indices],
                     scores=[sequence_scores[index] for index in indices],
                     uid=uid,
+                    prompt_fingerprint=(prompt_fingerprints[indices[0]] if prompt_fingerprints else None),
                     prompt_tokens=prompt_lengths[indices[0]],
                     tokenizer=self.tokenizer,
                     checkpoints=self.partial_trajectory_checkpoints,
